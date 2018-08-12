@@ -10,23 +10,28 @@
 #include <util/delay.h>
 #include <avr/sleep.h>
 
-#ifndef HOURS
-#define HOURS 0
-#endif
-#ifndef MINUTES
-#define MINUTES 0
-#endif
+/* f = f_cpu / 1024, ovf happens every 256 tacts */
+#define OVFPERSEC F_CPU / 1024 / 256
+#define INC true
+#define DEC false
 
-enum states {	RUN = 0,	/* running state */
-		CHANGE1,	/* changing 1st number */
-		CHANGE2,	/* changing 2nd number */
-		ALARM		/* alarm is ringing */
+/* 7-segment display pins & port can be configured in */
+/* struct segm_Port & struct segm_Display initializations */
+
+#define PINMODE		7
+#define PINUP		6
+#define PINDOWN		5
+#define PINALRM		4
+#define PININP		PIND
+
+enum states {	RUN = 0,	/* Running(tiking) state */
+		CHANGE1,	/* Changing 1st number */
+		CHANGE2,	/* Changing 2nd number */
+		ALARM		/* Alarm is ringing */
 };
 
 static enum states state = RUN;
-static uint8_t cnt1sec = 0;
-static bool flag1s = false, flag0_3s = false;
-static uint8_t _sec = 0;
+static bool flag0_5s = false;	/* Switches every 0.5 sec */
 
 /**
  * struct mode - stores data related to each mode
@@ -42,59 +47,23 @@ struct mode {
 	void (*tik)();
 };
 
-enum modes {TIME = 0, CLOCK, TIMER, STW};
 static struct mode modes[4] = {{.n = {0, 0}, .isset = true},
 		 	       {.n = {0, 0}, .isset = false},
 		 	       {.n = {0, 0}, .isset = false},
 		 	       {.n = {0, 0}, .isset = false}};
 
+enum modes {TIME = 0, CLOCK, TIMER, STW};
 static enum modes curmode = TIME;
 
-
-/* alarm melody */
-
-static bool notes_isplaying = false;
-static uint8_t _cntdur = 0;
-static uint32_t _cntfreqval = 0, _cntfreq = 0;
-
-#define NOTES_LEN 100
-static uint8_t notes_reallen = 9;
-static uint16_t notes_freqs[NOTES_LEN] = {392, 392, 392, 311, 466, 392, 311, 466, 392}; /* Hz */
-static uint16_t notes_durs[NOTES_LEN] = {1000,1000,1000,1000,250,1000,1000,250,2000}; /* ms */
-
-static uint8_t cur = 0;
-static void notes_play()
-{
-	_cntfreqval = F_CPU / 1024 / notes_freqs[cur];
-	_cntfreq = 0;
-	_cntdur = (F_CPU / 1024 / 256 / 1000) * notes_durs[cur];
-
-	notes_isplaying = true;
-
-	if (++cur >= notes_reallen) {
-		cur = 0;
-		notes_isplaying = false;
-		return;
-	}
-	TIMSK0 |= 1 << TOIE0;
-}
-
-/* 15625 Hz event */
-ISR(TIMER0_OVF_vect)
-{
-	if (--_cntdur == 0) {
-		TIMSK0 &= ~(1 << TOIE0);
-		PORTD |= 1 << 4;
-		notes_play();
-	}
-	if (_cntfreq >= _cntfreqval) {
-	PORTD |= 1 << 4;
-		//PORTD ^= 1 << 4;
-		_cntfreq = 0;
-	}
-}
-
-
+/**
+ * convert - converts numbers into 7-segment representation
+ *
+ * @res:	pointer to where store the result
+ * @n0:		1st number
+ * @n1:		2nd number
+ *
+ * Uses segm_sym_table, stored in segm library
+ */
 static inline void convert(uint8_t *res, uint8_t n0, uint8_t n1)
 {
 	res[0] = segm_sym_table[n0 / 10];
@@ -103,13 +72,28 @@ static inline void convert(uint8_t *res, uint8_t n0, uint8_t n1)
 	res[3] = segm_sym_table[n1 % 10];
 }
 
+/**
+ * altermode - universal func for changng the data of specified mode
+ *
+ * @m:		specified mode
+ * @nx:		alter 1st of 2nd number
+ * @inc:	increment or decrement; pass INC or DEC macro in calls.
+ *
+ * The function has max values of each number of each mode, defined in a 
+ * form of static array maxn[enum mode][nX], where X = [0, 1]. In case of 
+ * adding extra modes, this array must be properly changed.
+ */
 static void altermode(enum modes m, uint8_t nx, bool inc)
 {
-	static uint8_t maxn[][2] = {{24, 60}, {24, 60}, {100, 60}, {100, 60}};
+	static uint8_t maxn[][2] = {[TIME]  = {24, 60},
+				    [CLOCK] = {24, 60},
+				    [TIMER] = {100, 60},
+				    [STW]   = {100, 60}};
 
+	/* Mode is set when incremented or decremented */ 
 	modes[m].isset = true;
 
-	uint8_t res = modes[m].n[nx] + 2 * inc - 1;
+	uint8_t res = modes[m].n[nx] + (2 * inc - 1);
 
 	if (res < maxn[m][nx]) {
 		modes[m].n[nx] = res;
@@ -124,8 +108,10 @@ static void altermode(enum modes m, uint8_t nx, bool inc)
 
 static void timetik()
 {
+	static uint8_t _sec = 0;
+
 	if (++_sec >= 60) {
-		altermode(TIME, 1, true);
+		altermode(TIME, 1, INC);
 		_sec = 0;
 	}
 }
@@ -134,8 +120,8 @@ static void clocktik()
 {
 	if (!modes[CLOCK].isset)
 		return;
-	if (modes[CLOCK].n[1] == modes[TIME].n[1] && 
-	    modes[CLOCK].n[0] == modes[TIME].n[0]) {
+	if (modes[CLOCK].n[1] == modes[TIME].n[1]
+	    && modes[CLOCK].n[0] == modes[TIME].n[0]) {
 		curmode = CLOCK;
 		modes[CLOCK].isset = false;
 		state = ALARM;
@@ -146,7 +132,7 @@ static void timertik()
 {
 	if (!modes[TIMER].isset)
 		return;
-	altermode(TIMER, 1, false);
+	altermode(TIMER, 1, DEC);
 	if (modes[TIMER].n[0] == 0 && modes[TIMER].n[1] == 0) {
 		curmode = TIMER;
 		modes[TIMER].isset = false;
@@ -158,7 +144,7 @@ static void stwtik()
 {
 	if (!modes[STW].isset)
 		return;
-	altermode(STW, 1, true);
+	altermode(STW, 1, INC);
 }
 
 static void reset()
@@ -168,72 +154,82 @@ static void reset()
 	modes[curmode].isset = false;
 }
 
-/* buttons handling */
+
+/* Enabling and disabling buttons interrupts */
 
 static void btns_on()
 {
-	PCMSK2 |= (1 << 5) | (1 << 6) | (1 << 7);
+	PCMSK2 |= (1 << PINMODE) | (1 << PINUP) | (1 << PINDOWN);
 }
 
 static void btns_off()
 {
-	PCMSK2 &= ~((1 << 5) | (1 << 6) | (1 << 7));
+	PCMSK2 &= ~((1 << PINMODE) | (1 << PINUP) | (1 << PINDOWN));
 }
 
+/* In case of button pressed things are done in TIM2_COMP2B */
+/* interrupt after 255 tacts */
 ISR(PCINT2_vect)
 {
 	btns_off();
-	TIMSK2 |= 1 << OCIE2B;
+	OCR2B =	TCNT2 + 255;
+	TIMSK2 |= 1 << OCIE2B;	/* Enable TIM2_COMP2B interrupts */
 }
 
+/**
+ * For the logic implemented here refer to README.md
+ */
 ISR(TIMER2_COMPB_vect)
 {
-	static uint8_t cnt = 0;
-	
-	if (cnt++ < 2)
-		return;
-
 	TIMSK2 &= ~(1 << OCIE2B);
 
-	if (PIND & (1 << PIND7)) {		/* btn_mode */
+	/* If PINMODE and one more button are held, reset current mode */
+	if (PININP & (1 << PINMODE)
+	    && (PININP & (1 << PINUP) || PININP & (1 << PINDOWN)))
+		reset();
+
+	if (PININP & (1 << PINMODE)) {
 		state = state < CHANGE2 ? state + 1 : RUN;
-	} else if (PIND & (1 << PIND6)) {	/* btn_up */
+	} else if (PININP & (1 << PINUP)) {
 		if (state == RUN)
 			curmode = curmode < STW ? curmode + 1 : TIME;
 		else if (state < ALARM)
-			altermode(curmode, state - 1, true);
-	} else if (PIND & (1 << PIND5)) {	/* btn_down */
+			altermode(curmode, state - 1, INC);
+	} else if (PININP & (1 << PINDOWN)) {
 		if (state == RUN)
 			curmode = curmode > TIME ? curmode - 1 : STW;
 		else if (state < ALARM)
-			altermode(curmode, state - 1, false);
+			altermode(curmode, state - 1, DEC);
 	}
-	cnt = 0;
 	btns_on();
 }
 
+/* Occurs every F_CPU / 1024 / 256 times per second */
 ISR(TIMER2_OVF_vect, ISR_BLOCK)
 {
-	if (++cnt1sec < 61) {
-		if (cnt1sec == 25)
-			flag0_3s = !flag0_3s; 
+	static uint8_t cntovf = 0;
+
+	if (++cntovf < OVFPERSEC) {
+		if (cntovf == OVFPERSEC / 2)
+			flag0_5s = !flag0_5s;
 		return;
 	}
-	/* folowwing occurs every 1 ms */
+
+	/* Folowwing occurs every 1 sec */
+	cntovf = 0;
+	flag0_5s = !flag0_5s;
+
 	modes[TIME].tik();
 	if (state == RUN) {
 		modes[CLOCK].tik();
 		modes[TIMER].tik();
 		modes[STW].tik();
 	}
-	flag1s = !flag1s;
-	flag0_3s = !flag0_3s;
-	cnt1sec = 0;
 }
 
 ISR(TIMER2_COMPA_vect)
 {
-	TIMSK2 &= ~(1 << OCIE2A); /* disable tim2_comp2a interrupts */
+	TIMSK2 &= ~(1 << OCIE2A); /* Disable TIM2_COMP2A interrupts */
 }
 
 static void sleep_ms(uint16_t ms_val)
@@ -244,7 +240,7 @@ static void sleep_ms(uint16_t ms_val)
 	sleep_enable();	/* Set SE (sleep enable bit) */
 	sei();  	/* Enable interrupts. We want to wake up, don't we? */
 	while (ms_val--) {
-		/* Enable Timer2 CompareA interrupt by mask */
+		/* Enable TIM2_COMP2A interrupt by mask */
 		TIMSK2 |= (1 << OCIE2A);
 		/* Count 1 ms from TCNT2 to 0xFF (up direction) */
 		OCR2A = TCNT2 + ms;
@@ -268,12 +264,20 @@ static struct segm_Display display = {
 	.is_comm_anode = false
 };
 
+/**
+ * process - function which manages output to display
+ *
+ * This function is isolated of clock logic, it just 
+ * manages when and what digits must be shown.
+ * Function must be called in endless loop.
+ * Delays are provided by segm_indicate4 func.
+ */
 void process()
 {
 	uint8_t symbols[4];
 	convert(symbols, modes[curmode].n[0], modes[curmode].n[1]);
 
-	if (!flag0_3s) {
+	if (!flag0_5s) {
 		if (state == CHANGE1) {
 			symbols[0] = 0;
 			symbols[1] = 0;
@@ -285,40 +289,39 @@ void process()
 			symbols[1] = 0;
 			symbols[2] = 0;
 			symbols[3] = 0;
-			PORTD ^= 1 << 4;
+			PORTD ^= 1 << PINALRM;
 		}
 	}
 
-	if (flag0_3s || state > RUN)
-		symbols[1] |= 0x80; 	/* dot */
+	if (flag0_5s || state > RUN)
+		symbols[1] |= 0x80; 	/* Dot blinking */
 
 	segm_indicate4(&display, symbols);
 }
 
 int main()
 {
-	DDRD |= 1 << 4;		/* alarm pin */
-
-	/* modes initialization */
+	/* Modes initialization */
 	modes[TIME].tik = timetik;
 	modes[CLOCK].tik = clocktik;
 	modes[TIMER].tik = timertik;
 	modes[STW].tik = stwtik;
 
-	modes[TIME].n[0] = HOURS;
-	modes[TIME].n[1] = MINUTES;
+	char _time[] = __TIME__;	/* Expands to "HH:MM:SS" */
+	modes[TIME].n[0] = (_time[0] - '0') * 10 + (_time[1] - '0');
+	modes[TIME].n[1] = (_time[3] - '0') * 10 + (_time[4] - '0');
 
 	segm_init(&display);
 
-	OCR2B = 255;	/* for buttons polling */
-	TIMSK2 |= 1 << TOIE2; /* tim2_ovf interr enable */
-
-	DDRD &= ~((1 << 5) | (1 << 6) | (1 << 7));	/* input */
+	/* Pins configuration */
+	DDRD |= 1 << PINALRM;
+	DDRD &= ~((1 << PINMODE) | (1 << PINUP) | (1 << PINDOWN));
 	PCICR |= 1 << PCIE2;	/* Pin Change Interrupt Enable 2 */
 	btns_on();
 
-	/* Enable Timer2 */
-	/* f = Fclk_io / 1024, start timer */
+	/* Timer2 configuration */
+	TIMSK2 |= 1 << TOIE2; /* TIM2_OVF interrupt enable */
+	/* f = f_cpu / 1024, start timer */
 	cli();
 	TCCR2B = (1 << CS22) | (1 << CS21) | (1 << CS20);
 	sei();

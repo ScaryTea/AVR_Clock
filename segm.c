@@ -27,16 +27,6 @@ const uint8_t segm_sym_table[] = {
 	[9] = 0x6F
 };
 
-/*
-void segm_bcd(uint16_t number, uint8_t *res)
-{
-	do {
-		*res++ = number % 10;
-		number /= 10;
-	} while (number);
-}
-*/
-
 void segm_init(struct segm_Display *display)
 {
 	struct segm_Pin *ptrarr[] = {
