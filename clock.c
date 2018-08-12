@@ -39,7 +39,6 @@ static bool flag0_5s = false;	/* Switches every 0.5 sec */
  * @n:		numbers to display
  * @isset:	is this mode set
  * @tik:	function called every sec to alter the mode data
- *
  */
 struct mode {
 	uint8_t n[2];
