@@ -1,3 +1,7 @@
+/**
+ * Library for 7-segment indicator by @thodnev (github.com/thodnev)
+ */
+
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -6,23 +10,6 @@
  * For full ASCII table see https://github.com/dmadison/LED-Segment-ASCII
  */
 extern const uint8_t segm_sym_table[];
-
-/**
- * Stores special symbols to save space in symbol table
- */
-enum {
-	segm_sym_DASH = 0x02,	/* Hyphen	 */
-	segm_sym_DP = 0x01	/* Decimal point */
-};
-
-/**
- * segm_bcd() - convert binary number to BCD representation
- * @number:	value to be converted
- * @res:	byte array
- *
- * Non-packed BCD. User must ensure array has enough size.
- */
-//void segm_bcd(uint16_t number, uint8_t *res);
 
 /**
  * GPIO abstraction layer

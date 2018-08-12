@@ -4,7 +4,7 @@ MCU:=atmega328p			# see avr-as --help for full list
 PROGPORT:=/dev/ttyACM0		# see ls /dev | grep tty and 99-Arduino.rules
 
 CC=avr-gcc
-CFLAGS=-mmcu=$(MCU) -Os -Wall -Wextra -Wpedantic -Waddr-space-convert -Wmisspelled-isr -DHOURS=$(shell date '+%H') -DMINUTES=$(shell date '+%M') #-Werror  -save-temps
+CFLAGS=-mmcu=$(MCU) -Os -Wall -Wextra -Wpedantic -Waddr-space-convert -Wmisspelled-isr #-Werror #-save-temps
 SIZE:=avr-size --format=avr --mcu=$(MCU)
 OBJCOPY:=avr-objcopy -j .text -j .data -O ihex
 AVRDUDE:=avrdude
